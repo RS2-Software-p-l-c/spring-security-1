@@ -211,6 +211,9 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 
 	private Converter<Saml2AuthenticationToken, Decrypter> decrypterConverter = new DecrypterConverter();
 
+	private Consumer<Response> assertionDecrypter;
+	private Consumer<Assertion> principalDecrypter;
+
 	/**
 	 * Creates an {@link OpenSamlAuthenticationProvider}
 	 */
@@ -333,6 +336,50 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	}
 
 	/**
+	 * Sets the assertion response custom decrypter.
+	 *
+	 * You can use this method like so:
+	 *
+	 * <pre>
+	 *	YourDecrypter decrypter = // ... your custom decrypter
+	 *
+	 *	OpenSamlAuthenticationProvider provider = new OpenSamlAuthenticationProvider();
+	 *	provider.setAssertionDecrypter((response) -> {
+	 *  	EncryptedAssertion encrypted = response.getEncryptedAssertions().get(0);
+	 *  	Assertion assertion = decrypter.decrypt(encrypted);
+	 *  	response.getAssertions().add(assertion);
+	 *	});
+	 * </pre>
+	 *
+	 * @param assertionDecrypter response consumer
+	 */
+	public void setAssertionDecrypter(Consumer<Response> assertionDecrypter) {
+		this.assertionDecrypter = assertionDecrypter;
+	}
+
+	/**
+	 * Sets the principal custom decrypter.
+	 *
+	 * You can use this method like so:
+	 *
+	 * <pre>
+	 *	YourDecrypter decrypter = // ... your custom decrypter
+	 *
+	 *	OpenSamlAuthenticationProvider provider = new OpenSamlAuthenticationProvider();
+	 *	provider.setAssertionDecrypter((assertion) -> {
+	 *		EncryptedID encrypted = assertion.getSubject().getEncryptedID();
+	 *		NameID name = decrypter.decrypt(encrypted);
+	 *		assertion.getSubject().setNameID(name)
+	 *	});
+	 * </pre>
+	 *
+	 * @param principalDecrypter response consumer
+	 */
+	public void setPrincipalDecrypter(Consumer<Assertion> principalDecrypter) {
+		this.principalDecrypter = principalDecrypter;
+	}
+
+	/**
 	 * Construct a default strategy for validating each SAML 2.0 Assertion and associated
 	 * {@link Authentication} token
 	 * @return the default assertion validator strategy
@@ -405,6 +452,14 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	@Override
 	public boolean supports(Class<?> authentication) {
 		return authentication != null && Saml2AuthenticationToken.class.isAssignableFrom(authentication);
+	}
+
+	private Consumer<Response> getAssertionDecrypter() {
+		return this.assertionDecrypter;
+	}
+
+	private Consumer<Assertion> getPrincipalDecrypter() {
+		return this.principalDecrypter;
 	}
 
 	private Collection<? extends GrantedAuthority> getAssertionAuthorities(Assertion assertion) {
@@ -512,6 +567,12 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	}
 
 	private List<Assertion> decryptAssertions(Decrypter decrypter, Response response) {
+		Consumer<Response> assertionDecrypter = getAssertionDecrypter();
+		if (assertionDecrypter != null) {
+			assertionDecrypter.accept(response);
+			return response.getAssertions();
+		}
+
 		List<Assertion> assertions = new ArrayList<>();
 		for (EncryptedAssertion encryptedAssertion : response.getEncryptedAssertions()) {
 			try {
@@ -572,6 +633,11 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 			return null;
 		}
 		if (assertion.getSubject().getEncryptedID() == null) {
+			return assertion.getSubject().getNameID();
+		}
+		Consumer<Assertion> principalDecrypter = getPrincipalDecrypter();
+		if (principalDecrypter != null) {
+			principalDecrypter.accept(assertion);
 			return assertion.getSubject().getNameID();
 		}
 		try {
