@@ -212,6 +212,7 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	private Converter<Saml2AuthenticationToken, Decrypter> decrypterConverter = new DecrypterConverter();
 
 	private Consumer<Response> assertionDecrypter;
+
 	private Consumer<Assertion> principalDecrypter;
 
 	/**
@@ -350,7 +351,6 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	 *  	response.getAssertions().add(assertion);
 	 *	});
 	 * </pre>
-	 *
 	 * @param assertionDecrypter response consumer
 	 */
 	public void setAssertionDecrypter(Consumer<Response> assertionDecrypter) {
@@ -372,7 +372,6 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	 *		assertion.getSubject().setNameID(name)
 	 *	});
 	 * </pre>
-	 *
 	 * @param principalDecrypter response consumer
 	 */
 	public void setPrincipalDecrypter(Consumer<Assertion> principalDecrypter) {
