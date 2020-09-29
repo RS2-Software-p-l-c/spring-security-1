@@ -211,9 +211,31 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 
 	private Converter<Saml2AuthenticationToken, Decrypter> decrypterConverter = new DecrypterConverter();
 
-	private Consumer<Response> assertionDecrypter;
+	private Decrypter decrypter;
 
-	private Consumer<Assertion> principalDecrypter;
+	private Consumer<ResponseToken> assertionDecrypter = (responseToken) -> {
+		List<Assertion> assertions = new ArrayList<>();
+		for (EncryptedAssertion encryptedAssertion : responseToken.getResponse().getEncryptedAssertions()) {
+			try {
+				Assertion assertion = this.decrypter.decrypt(encryptedAssertion);
+				assertions.add(assertion);
+			}
+			catch (DecryptionException ex) {
+				throw createAuthenticationException(Saml2ErrorCodes.DECRYPTION_ERROR, ex.getMessage(), ex);
+			}
+		}
+		responseToken.getResponse().getAssertions().addAll(assertions);
+	};
+
+	private Consumer<ResponseToken> principalDecrypter = (responseToken) -> {
+		try {
+			Assertion assertion = CollectionUtils.firstElement(responseToken.getResponse().getAssertions());
+			assertion.getSubject().setNameID((NameID) this.decrypter.decrypt(assertion.getSubject().getEncryptedID()));
+		}
+		catch (DecryptionException ex) {
+			throw createAuthenticationException(Saml2ErrorCodes.DECRYPTION_ERROR, ex.getMessage(), ex);
+		}
+	};
 
 	/**
 	 * Creates an {@link OpenSamlAuthenticationProvider}
@@ -345,15 +367,16 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	 *	YourDecrypter decrypter = // ... your custom decrypter
 	 *
 	 *	OpenSamlAuthenticationProvider provider = new OpenSamlAuthenticationProvider();
-	 *	provider.setAssertionDecrypter((response) -> {
+	 *	provider.setAssertionDecrypter((responseToken) -> {
+	 *		Response response = responseToken.getResponse();
 	 *  	EncryptedAssertion encrypted = response.getEncryptedAssertions().get(0);
 	 *  	Assertion assertion = decrypter.decrypt(encrypted);
 	 *  	response.getAssertions().add(assertion);
 	 *	});
 	 * </pre>
-	 * @param assertionDecrypter response consumer
+	 * @param assertionDecrypter response token consumer
 	 */
-	public void setAssertionDecrypter(Consumer<Response> assertionDecrypter) {
+	public void setAssertionDecrypter(Consumer<ResponseToken> assertionDecrypter) {
 		this.assertionDecrypter = assertionDecrypter;
 	}
 
@@ -366,15 +389,16 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 	 *	YourDecrypter decrypter = // ... your custom decrypter
 	 *
 	 *	OpenSamlAuthenticationProvider provider = new OpenSamlAuthenticationProvider();
-	 *	provider.setAssertionDecrypter((assertion) -> {
+	 *	provider.setAssertionDecrypter((responseToken) -> {
+	 *		Assertion assertion = CollectionUtils.firstElement(responseToken.getResponse().getAssertions());
 	 *		EncryptedID encrypted = assertion.getSubject().getEncryptedID();
 	 *		NameID name = decrypter.decrypt(encrypted);
 	 *		assertion.getSubject().setNameID(name)
 	 *	});
 	 * </pre>
-	 * @param principalDecrypter response consumer
+	 * @param principalDecrypter response token consumer
 	 */
-	public void setPrincipalDecrypter(Consumer<Assertion> principalDecrypter) {
+	public void setPrincipalDecrypter(Consumer<ResponseToken> principalDecrypter) {
 		this.principalDecrypter = principalDecrypter;
 	}
 
@@ -453,11 +477,11 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 		return authentication != null && Saml2AuthenticationToken.class.isAssignableFrom(authentication);
 	}
 
-	private Consumer<Response> getAssertionDecrypter() {
+	private Consumer<ResponseToken> getAssertionDecrypter() {
 		return this.assertionDecrypter;
 	}
 
-	private Consumer<Assertion> getPrincipalDecrypter() {
+	private Consumer<ResponseToken> getPrincipalDecrypter() {
 		return this.principalDecrypter;
 	}
 
@@ -483,8 +507,9 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 		boolean responseSigned = response.isSigned();
 		Saml2ResponseValidatorResult result = validateResponse(token, response);
 
-		Decrypter decrypter = this.decrypterConverter.convert(token);
-		List<Assertion> assertions = decryptAssertions(decrypter, response);
+		this.decrypter = this.decrypterConverter.convert(token);
+		ResponseToken responseToken = new ResponseToken(response, token);
+		List<Assertion> assertions = decryptAssertions(responseToken);
 		if (!isSigned(responseSigned, assertions)) {
 			String description = "Either the response or one of the assertions is unsigned. "
 					+ "Please either sign the response or all of the assertions.";
@@ -493,7 +518,7 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 		result = result.concat(validateAssertions(token, response));
 
 		Assertion firstAssertion = CollectionUtils.firstElement(response.getAssertions());
-		NameID nameId = decryptPrincipal(decrypter, firstAssertion);
+		NameID nameId = decryptPrincipal(responseToken);
 		if (nameId == null || nameId.getValue() == null) {
 			Saml2Error error = new Saml2Error(Saml2ErrorCodes.SUBJECT_NOT_FOUND,
 					"Assertion [" + firstAssertion.getID() + "] is missing a subject");
@@ -565,25 +590,9 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 		return Saml2ResponseValidatorResult.failure(errors);
 	}
 
-	private List<Assertion> decryptAssertions(Decrypter decrypter, Response response) {
-		Consumer<Response> assertionDecrypter = getAssertionDecrypter();
-		if (assertionDecrypter != null) {
-			assertionDecrypter.accept(response);
-			return response.getAssertions();
-		}
-
-		List<Assertion> assertions = new ArrayList<>();
-		for (EncryptedAssertion encryptedAssertion : response.getEncryptedAssertions()) {
-			try {
-				Assertion assertion = decrypter.decrypt(encryptedAssertion);
-				assertions.add(assertion);
-			}
-			catch (DecryptionException ex) {
-				throw createAuthenticationException(Saml2ErrorCodes.DECRYPTION_ERROR, ex.getMessage(), ex);
-			}
-		}
-		response.getAssertions().addAll(assertions);
-		return response.getAssertions();
+	private List<Assertion> decryptAssertions(ResponseToken response) {
+		getAssertionDecrypter().accept(response);
+		return response.getResponse().getAssertions();
 	}
 
 	private Saml2ResponseValidatorResult validateAssertions(Saml2AuthenticationToken token, Response response) {
@@ -627,26 +636,16 @@ public final class OpenSamlAuthenticationProvider implements AuthenticationProvi
 		return true;
 	}
 
-	private NameID decryptPrincipal(Decrypter decrypter, Assertion assertion) {
+	private NameID decryptPrincipal(ResponseToken responseToken) {
+		Assertion assertion = CollectionUtils.firstElement(responseToken.getResponse().getAssertions());
 		if (assertion.getSubject() == null) {
 			return null;
 		}
 		if (assertion.getSubject().getEncryptedID() == null) {
 			return assertion.getSubject().getNameID();
 		}
-		Consumer<Assertion> principalDecrypter = getPrincipalDecrypter();
-		if (principalDecrypter != null) {
-			principalDecrypter.accept(assertion);
-			return assertion.getSubject().getNameID();
-		}
-		try {
-			NameID nameId = (NameID) decrypter.decrypt(assertion.getSubject().getEncryptedID());
-			assertion.getSubject().setNameID(nameId);
-			return nameId;
-		}
-		catch (DecryptionException ex) {
-			throw createAuthenticationException(Saml2ErrorCodes.DECRYPTION_ERROR, ex.getMessage(), ex);
-		}
+		getPrincipalDecrypter().accept(responseToken);
+		return assertion.getSubject().getNameID();
 	}
 
 	private static Map<String, List<Object>> getAssertionAttributes(Assertion assertion) {
